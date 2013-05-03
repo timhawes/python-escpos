@@ -165,3 +165,16 @@ class File(Escpos):
     def __del__(self):
         """ Close system file """
         self.device.close()
+
+
+
+class Dummy(Escpos):
+    """ Define Dummy printer for debugging """
+
+    def __init__(self):
+        pass
+
+
+    def _raw(self, msg):
+        """ Print any command sent in raw format """
+        print repr(msg)
