@@ -7,6 +7,7 @@
 '''
 
 import Image
+import ImageOps
 import qrcode
 import time
 
@@ -18,94 +19,62 @@ class Escpos:
     device    = None
 
 
-    def _check_image_size(self, size):
-        """ Check and fix the size of the image to 32 bits """
-        if size % 32 == 0:
-            return (0, 0)
-        else:
-            image_border = 32 - (size % 32)
-            if (image_border % 2) == 0:
-                return (image_border / 2, image_border / 2)
-            else:
-                return (image_border / 2, (image_border / 2) + 1)
-
-
-    def _print_image(self, line, size):
-        """ Print formatted image """
-        i = 0
-        cont = 0
-        buffer = ""
-       
-        self._raw(S_RASTER_N)
-        buffer = "%02X%02X%02X%02X" % (((size[0]/size[1])/8), 0, size[1], 0)
-        self._raw(buffer.decode('hex'))
-        buffer = ""
-
-        while i < len(line):
-            hex_string = int(line[i:i+8],2)
-            buffer += "%02X" % hex_string
-            i += 8
-            cont += 1
-            if cont % 4 == 0:
-                self._raw(buffer.decode("hex"))
-                buffer = ""
-                cont = 0
-
-
-    def _convert_image(self, im):
-        """ Parse image and prepare it to a printable format """
-        pixels   = []
-        pix_line = ""
-        im_left  = ""
-        im_right = ""
-        switch   = 0
-        img_size = [ 0, 0 ]
-
-
-        if im.size[0] > 512:
-            print  "WARNING: Image is wider than 512 and could be truncated at print time "
-        if im.size[1] > 255:
-            raise ImageSizeError()
-
-        im_border = self._check_image_size(im.size[0])
-        for i in range(im_border[0]):
-            im_left += "0"
-        for i in range(im_border[1]):
-            im_right += "0"
-
-        for y in range(im.size[1]):
-            img_size[1] += 1
-            pix_line += im_left
-            img_size[0] += im_border[0]
-            for x in range(im.size[0]):
-                img_size[0] += 1
-                RGB = im.getpixel((x, y))
-                im_color = (RGB[0] + RGB[1] + RGB[2])
-                im_pattern = "1X0"
-                pattern_len = len(im_pattern)
-                switch = (switch - 1 ) * (-1)
-                for x in range(pattern_len):
-                    if im_color <= (255 * 3 / pattern_len * (x+1)):
-                        if im_pattern[x] == "X":
-                            pix_line += "%d" % switch
-                        else:
-                            pix_line += im_pattern[x]
-                        break
-                    elif im_color > (255 * 3 / pattern_len * pattern_len) and im_color <= (255 * 3):
-                        pix_line += im_pattern[-1]
-                        break 
-            pix_line += im_right
-            img_size[0] += im_border[1]
-
-        self._print_image(pix_line, img_size)
-
-
-    def image(self,path_img):
+    def image(self, path_img):
         """ Open image file """
-        im_open = Image.open(path_img)
-        im = im_open.convert("RGB")
-        # Convert the RGB image in printable image
-        self._convert_image(im)
+        if type(path_img) is str or type(path_img) is unicode:
+            im = Image.open(path_img)
+        else:
+            im = path_img
+
+        bitmap_mode = 0
+        max_width = 256
+        height_factor = 0.66666666 # to adjust for different x and y DPI
+        resize_filter = Image.ANTIALIAS
+        line_spacing = 49 # n/360 inches
+
+        # If image has an alpha channel, place it on a white background
+        if im.mode == "RGBA":
+            imtmp = Image.new('RGB', im.size, (255, 255, 255))
+            imtmp.paste(im, (0, 0), im)
+            im = imtmp
+
+        # Resize to fit and/or adjust the aspect ratio (DPI may be different for x and y)
+        if im.size[0] > max_width:
+            height = int(im.size[1]*(float(max_width)/float(im.size[0]))*height_factor)
+            im = im.resize((max_width, height), resize_filter)
+        else:
+            height = int(im.size[1]*height_factor)
+            im = im.resize((max_width, height), resize_filter)
+
+        # Invert
+        im = ImageOps.invert(im)
+
+        # Convert to 1-bit
+        im = im.convert("1")
+
+        # Set line spacing to remove gaps
+        self._raw('\x1b\x33' + chr(line_spacing))
+
+        # Request access to the pixels
+        pixels = im.load()
+
+        # Output, 8 pixel rows at a time
+        for y in range(0, im.size[1], 8):
+            output = '' # the bytes that we will transmit for this group of pixel rows
+            for x in range(0, im.size[0]):
+                byte = 0 # representing 8 pixels in a vertical column
+                for offset in range(0, 8):
+                    try:
+                        if pixels[x, y+offset] > 0:
+                            byte += (2**(7-offset))
+                    except IndexError:
+                        pass
+                output += chr(byte)
+            n1 = len(output) % 256
+            n2 = len(output) / 256
+            self._raw('\x1b\x2a')
+            self._raw(chr(bitmap_mode)+chr(n1)+chr(n2))
+            self._raw(output)
 
 
     def qr(self,text):
@@ -114,9 +83,7 @@ class Escpos:
         qr_code.add_data(text)
         qr_code.make(fit=True)
         qr_img = qr_code.make_image()
-        im = qr_img._img.convert("RGB")
-        # Convert the RGB image in printable image
-        self._convert_image(im)
+        self.image(qr_img._img)
 
 
     def barcode(self, code, bc, width, height, pos, font):
