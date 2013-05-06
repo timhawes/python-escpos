@@ -1,0 +1,9 @@
+*~ 
+.*~
+.*.sw[a-z]
+#*#
+.DS_Store
+*.tmp
+*.bak
+*.pyc
+*.pyo
